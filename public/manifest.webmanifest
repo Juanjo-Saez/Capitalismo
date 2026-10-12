@@ -1,0 +1,11 @@
+{
+  "name": "Gastos de Juanjo y Ana",
+  "short_name": "Gastos",
+  "description": "Tu pequeño libro de gastos compartidos.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f0e9",
+  "theme_color": "#f5f0e9",
+  "lang": "es",
+  "icons": []
+}
