@@ -4,13 +4,16 @@ La mejora de mantener la fecha seleccionada durante tres horas ya está implemen
 
 ## 1. Preparar los datos
 
-- [ ] Añadir una categoría obligatoria al gasto, con una primera lista editable de categorías: alimentación, vivienda, transporte, ocio, salud, compras, viajes, suscripciones y otros.
+- [x] Añadir una categoría obligatoria al gasto, con una primera lista de categorías: alimentación, vivienda, transporte, ocio, salud, compras, viajes, suscripciones y otros.
+- [x] Sugerir la categoría localmente a partir del concepto y de alias conocidos, sin enviar datos fuera del dispositivo.
+- [x] Marcar como `Por revisar` los conceptos desconocidos y permitir corregir la sugerencia desde el formulario.
+- [x] Recordar las correcciones manuales como reglas locales para futuros conceptos similares.
 - [ ] Permitir crear, renombrar, ocultar y reordenar categorías desde ajustes, sin borrar el histórico asociado.
 - [ ] Añadir el tipo de gasto: `único`, `recurrente mensual` o `recurrente con otra frecuencia`.
 - [ ] Para los recurrentes, guardar la frecuencia, la fecha de inicio y, opcionalmente, la fecha de fin o el estado activo/inactivo.
 - [ ] Diferenciar entre un gasto registrado y una regla de gasto recurrente: la regla servirá para proyecciones y los movimientos reales seguirán siendo editables individualmente.
-- [ ] Mantener el modelo de datos en céntimos y conservar compatibilidad con copias JSON antiguas: los gastos importados sin categoría deben quedar en `otros` y como `únicos`.
-- [ ] Revisar el formulario de alta y edición para que categoría y tipo puedan registrarse sin hacer más lenta la anotación rápida de un gasto.
+- [x] Mantener el modelo de datos en céntimos y conservar compatibilidad con copias JSON antiguas: los gastos importados sin categoría quedan en `Por revisar`.
+- [x] Revisar el formulario de alta y edición para registrar la categoría sin hacer más lenta la anotación rápida de un gasto.
 
 ## 2. Filtros y consulta del historial
 

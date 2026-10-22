@@ -23,6 +23,18 @@ import {
 type Person = 'Juanjo' | 'Ana';
 type SplitMode = 'equal' | 'full-other';
 type Tab = 'summary' | 'activity' | 'backup';
+type CategorySource = 'automatic' | 'manual' | 'review';
+
+type CategoryDefinition = {
+  id: string;
+  label: string;
+  keywords: string[];
+};
+
+type CategoryRule = {
+  term: string;
+  categoryId: string;
+};
 
 type Expense = {
   id: string;
@@ -33,6 +45,8 @@ type Expense = {
   payer: Person;
   split: SplitMode;
   note: string;
+  categoryId: string;
+  categorySource: CategorySource;
   createdAt: number;
 };
 
@@ -54,10 +68,11 @@ type Preferences = {
   payerOverride: Person;
   dateOverrideUntil: number;
   dateOverride: string;
+  categoryRules: CategoryRule[];
 };
 
 type BackupPayload = {
-  version: 1;
+  version: number;
   exportedAt: string;
   items: LedgerItem[];
   preferences: Preferences;
@@ -70,6 +85,18 @@ const AUTO_BACKUP_AT_KEY = 'gastos:auto-backup-at';
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
 const PEOPLE: Person[] = ['Juanjo', 'Ana'];
+const CATEGORY_DEFINITIONS: CategoryDefinition[] = [
+  { id: 'review', label: 'Por revisar', keywords: [] },
+  { id: 'food', label: 'Alimentación', keywords: ['alimentacion', 'supermercado', 'consum', 'carrefour', 'mercadona', 'lidl', 'aldi', 'dia'] },
+  { id: 'home', label: 'Vivienda', keywords: ['alquiler', 'hipoteca', 'luz', 'agua', 'gas', 'internet', 'comunidad'] },
+  { id: 'transport', label: 'Transporte', keywords: ['gasolina', 'repsol', 'cepsa', 'parking', 'uber', 'taxi', 'metro', 'tren', 'renfe', 'autobus'] },
+  { id: 'leisure', label: 'Ocio', keywords: ['cine', 'teatro', 'concierto', 'bar', 'restaurante', 'ocio'] },
+  { id: 'health', label: 'Salud', keywords: ['farmacia', 'medico', 'dentista', 'salud', 'fisioterapia'] },
+  { id: 'shopping', label: 'Compras', keywords: ['amazon', 'ropa', 'zara', 'ikea', 'fnac', 'compras'] },
+  { id: 'travel', label: 'Viajes', keywords: ['hotel', 'vuelo', 'booking', 'airbnb', 'viaje', 'avion'] },
+  { id: 'subscriptions', label: 'Suscripciones', keywords: ['netflix', 'spotify', 'disney', 'hbo', 'prime', 'suscripcion'] },
+  { id: 'other', label: 'Otros', keywords: [] },
+];
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -78,7 +105,53 @@ const defaultPreferences = (): Preferences => ({
   payerOverride: 'Juanjo',
   dateOverrideUntil: 0,
   dateOverride: today(),
+  categoryRules: [],
 });
+
+const normalizeText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const normalizePreferences = (value?: Partial<Preferences>): Preferences => ({
+  ...defaultPreferences(),
+  ...value,
+  categoryRules: Array.isArray(value?.categoryRules)
+    ? value.categoryRules.filter((rule) => typeof rule?.term === 'string' && typeof rule?.categoryId === 'string')
+    : [],
+});
+
+const normalizeLedgerItem = (item: LedgerItem): LedgerItem =>
+  item.kind === 'expense'
+    ? { ...item, categoryId: item.categoryId || 'review', categorySource: item.categorySource || 'review' }
+    : item;
+
+const getCategorySuggestion = (concept: string, rules: CategoryRule[]) => {
+  const normalizedConcept = normalizeText(concept);
+  if (!normalizedConcept) return { categoryId: 'review', source: 'review' as CategorySource };
+
+  const learnedRule = [...rules].sort((a, b) => b.term.length - a.term.length).find((rule) => normalizedConcept.includes(rule.term));
+  if (learnedRule) return { categoryId: learnedRule.categoryId, source: 'automatic' as CategorySource };
+
+  const match = CATEGORY_DEFINITIONS.find(
+    (category) => category.id !== 'review' && category.id !== 'other' && category.keywords.some((keyword) => normalizedConcept.includes(keyword)),
+  );
+  return match
+    ? { categoryId: match.id, source: 'automatic' as CategorySource }
+    : { categoryId: 'review', source: 'review' as CategorySource };
+};
+
+const rememberCategoryRule = (rules: CategoryRule[], concept: string, categoryId: string) => {
+  const term = normalizeText(concept);
+  if (term.length < 3 || categoryId === 'review') return rules;
+  return [{ term, categoryId }, ...rules.filter((rule) => rule.term !== term)];
+};
+
+const getCategoryLabel = (categoryId: string) =>
+  CATEGORY_DEFINITIONS.find((category) => category.id === categoryId)?.label || 'Por revisar';
 
 const loadJson = <T,>(key: string, fallback: T): T => {
   try {
@@ -124,9 +197,9 @@ const getDefaults = (preferences: Preferences) => {
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 function App() {
-  const [items, setItems] = useState<LedgerItem[]>(() => loadJson(ITEMS_KEY, []));
+  const [items, setItems] = useState<LedgerItem[]>(() => loadJson<LedgerItem[]>(ITEMS_KEY, []).map(normalizeLedgerItem));
   const [preferences, setPreferences] = useState<Preferences>(() =>
-    loadJson(PREFERENCES_KEY, defaultPreferences()),
+    normalizePreferences(loadJson<Partial<Preferences>>(PREFERENCES_KEY, {})),
   );
   const [tab, setTab] = useState<Tab>('summary');
   const [showExpenseForm, setShowExpenseForm] = useState(false);
@@ -141,6 +214,8 @@ function App() {
     payer: getDefaults(preferences).payer,
     split: 'equal' as SplitMode,
     note: '',
+    categoryId: 'review',
+    categorySource: 'review' as CategorySource,
   }));
   const [settlementForm, setSettlementForm] = useState(() => ({
     amount: '',
@@ -187,7 +262,7 @@ function App() {
 
   const resetExpenseForm = () => {
     const defaults = getDefaults(preferences);
-    setExpenseForm({ concept: '', amount: '', date: defaults.date, payer: defaults.payer, split: 'equal', note: '' });
+    setExpenseForm({ concept: '', amount: '', date: defaults.date, payer: defaults.payer, split: 'equal', note: '', categoryId: 'review', categorySource: 'review' });
     setEditingId(null);
   };
 
@@ -205,11 +280,21 @@ function App() {
       payer: expense.payer,
       split: expense.split,
       note: expense.note,
+      categoryId: expense.categoryId,
+      categorySource: expense.categorySource,
     });
     setEditingId(expense.id);
     setShowSettlementForm(false);
     setShowExpenseForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const updateExpenseConcept = (concept: string) => {
+    setExpenseForm((current) => {
+      if (current.categorySource === 'manual') return { ...current, concept };
+      const suggestion = getCategorySuggestion(concept, preferences.categoryRules);
+      return { ...current, concept, categoryId: suggestion.categoryId, categorySource: suggestion.source };
+    });
   };
 
   const submitExpense = (event: FormEvent) => {
@@ -239,18 +324,24 @@ function App() {
         payer: expenseForm.payer,
         split: expenseForm.split,
         note: expenseForm.note.trim(),
+        categoryId: expenseForm.categoryId,
+        categorySource: expenseForm.categorySource,
         createdAt: Date.now(),
       };
       setItems((current) => [...current, expense]);
       setNotice('Gasto guardado.');
     }
 
+    const nextCategoryRules = expenseForm.categorySource === 'manual'
+      ? rememberCategoryRule(preferences.categoryRules, expenseForm.concept, expenseForm.categoryId)
+      : preferences.categoryRules;
     const nextPreferences: Preferences = {
       ...preferences,
       payerOverride: expenseForm.payer,
       payerOverrideUntil: expenseForm.payer === 'Ana' ? Date.now() + THREE_HOURS : 0,
       dateOverride: expenseForm.date,
       dateOverrideUntil: expenseForm.date === today() ? 0 : Date.now() + THREE_HOURS,
+      categoryRules: nextCategoryRules,
     };
     setPreferences(nextPreferences);
     setShowExpenseForm(false);
@@ -299,7 +390,7 @@ function App() {
   };
 
   const createBackup = (currentItems = items, currentPreferences = preferences): BackupPayload => ({
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     items: currentItems,
     preferences: currentPreferences,
@@ -324,8 +415,8 @@ function App() {
       try {
         const payload = JSON.parse(String(reader.result)) as BackupPayload;
         if (!Array.isArray(payload.items)) throw new Error('Formato inválido');
-        setItems(payload.items);
-        if (payload.preferences) setPreferences(payload.preferences);
+        setItems(payload.items.map(normalizeLedgerItem));
+        if (payload.preferences) setPreferences(normalizePreferences(payload.preferences));
         setNotice('Copia restaurada correctamente.');
       } catch {
         setNotice('No se pudo leer esa copia JSON.');
@@ -363,6 +454,7 @@ function App() {
             {formatDate(item.date)} <span className="dot">·</span>{' '}
             {isSettlement ? `${item.from} pagó a ${item.to}` : `Pagó ${item.payer} · ${item.split === 'equal' ? 'mitad y mitad' : 'íntegro para la otra persona'}`}
           </p>
+          {!isSettlement && <span className={`category-badge ${item.categoryId === 'review' ? 'category-review' : ''}`}>{getCategoryLabel(item.categoryId)}</span>}
           {!isSettlement && item.note && <small>{item.note}</small>}
         </div>
         <div className="movement-actions">
@@ -431,9 +523,10 @@ function App() {
                 {showExpenseForm ? (
                   <form onSubmit={submitExpense}>
                     <div className="form-grid">
-                      <label className="field field-wide"><span>Concepto</span><input autoFocus value={expenseForm.concept} onChange={(event) => setExpenseForm({ ...expenseForm, concept: event.target.value })} placeholder="Ej. compra del súper" /></label>
+                      <label className="field field-wide"><span>Concepto</span><input autoFocus value={expenseForm.concept} onChange={(event) => updateExpenseConcept(event.target.value)} placeholder="Ej. compra del súper" /></label>
                       <label className="field"><span>Importe</span><div className="input-with-suffix"><input inputMode="decimal" value={expenseForm.amount} onChange={(event) => setExpenseForm({ ...expenseForm, amount: event.target.value })} placeholder="0,00" /><b>EUR</b></div></label>
                       <label className="field"><span>Fecha <span className="field-hint">{activeDefaults.date === expenseForm.date && '· sugerida'}</span></span><div className="input-with-icon"><input type="date" value={expenseForm.date} onChange={(event) => setExpenseForm({ ...expenseForm, date: event.target.value })} /><CalendarDays size={16} /></div></label>
+                      <label className="field"><span>Categoría <span className={`field-hint ${expenseForm.categorySource === 'review' ? 'field-warning' : ''}`}>{expenseForm.categorySource === 'automatic' ? '· sugerida' : expenseForm.categorySource === 'manual' ? '· elegida por ti' : '· pendiente'}</span></span><select value={expenseForm.categoryId} onChange={(event) => setExpenseForm({ ...expenseForm, categoryId: event.target.value, categorySource: event.target.value === 'review' ? 'review' : 'manual' })}>{CATEGORY_DEFINITIONS.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>
                       <fieldset className="field field-wide"><legend>¿Quién pagó?</legend><div className="segmented-control">{PEOPLE.map((person) => <button type="button" key={person} className={expenseForm.payer === person ? 'selected' : ''} onClick={() => setExpenseForm({ ...expenseForm, payer: person })}>{person}{person === activeDefaults.payer && <span className="default-dot" />}</button>)}</div></fieldset>
                       <fieldset className="field field-wide"><legend>¿Cómo se reparte?</legend><div className="split-options"><button type="button" className={expenseForm.split === 'equal' ? 'selected' : ''} onClick={() => setExpenseForm({ ...expenseForm, split: 'equal' })}><span className="option-title">Mitad y mitad</span><span className="option-copy">Cada uno asume la mitad</span></button><button type="button" className={expenseForm.split === 'full-other' ? 'selected' : ''} onClick={() => setExpenseForm({ ...expenseForm, split: 'full-other' })}><span className="option-title">Íntegro para la otra persona</span><span className="option-copy">El pagador adelanta todo</span></button></div></fieldset>
                       <label className="field field-wide"><span>Nota <span className="field-hint">opcional</span></span><input value={expenseForm.note} onChange={(event) => setExpenseForm({ ...expenseForm, note: event.target.value })} placeholder="Algún detalle para recordarlo" /></label>
@@ -465,7 +558,7 @@ function App() {
 }
 
 function createBackup(items: LedgerItem[], preferences: Preferences): BackupPayload {
-  return { version: 1, exportedAt: new Date().toISOString(), items, preferences };
+  return { version: 2, exportedAt: new Date().toISOString(), items, preferences };
 }
 
 export default App;
