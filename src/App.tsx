@@ -346,9 +346,18 @@ function App() {
         <div className="movement-content">
           <div className="movement-title-row">
             <h3>{item.concept}</h3>
-            <strong className={effect >= 0 ? 'amount-positive' : 'amount-negative'}>
-              {effect >= 0 ? '+' : '-'}{formatCurrency(Math.abs(effect))}
-            </strong>
+            {isSettlement ? (
+              <strong className={effect >= 0 ? 'amount-positive' : 'amount-negative'}>
+                {effect >= 0 ? '+' : '-'}{formatCurrency(Math.abs(effect))}
+              </strong>
+            ) : (
+              <div className="movement-amount">
+                <strong className="expense-total">{formatCurrency(item.amountCents)}</strong>
+                <span className={effect >= 0 ? 'amount-positive' : 'amount-negative'}>
+                  Balance: {effect >= 0 ? '+' : '-'}{formatCurrency(Math.abs(effect))}
+                </span>
+              </div>
+            )}
           </div>
           <p>
             {formatDate(item.date)} <span className="dot">·</span>{' '}
