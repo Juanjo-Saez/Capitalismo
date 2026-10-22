@@ -129,6 +129,12 @@ const normalizeLedgerItem = (item: LedgerItem): LedgerItem =>
     ? { ...item, categoryId: item.categoryId || 'review', categorySource: item.categorySource || 'review' }
     : item;
 
+const loadItems = (): LedgerItem[] => {
+  const storedItems = loadJson<unknown>(ITEMS_KEY, []);
+  if (!Array.isArray(storedItems)) return [];
+  return storedItems.filter((item): item is LedgerItem => Boolean(item && typeof item === 'object' && 'kind' in item)).map(normalizeLedgerItem);
+};
+
 const getCategorySuggestion = (concept: string, rules: CategoryRule[]) => {
   const normalizedConcept = normalizeText(concept);
   if (!normalizedConcept) return { categoryId: 'review', source: 'review' as CategorySource };
@@ -197,7 +203,7 @@ const getDefaults = (preferences: Preferences) => {
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 function App() {
-  const [items, setItems] = useState<LedgerItem[]>(() => loadJson<LedgerItem[]>(ITEMS_KEY, []).map(normalizeLedgerItem));
+  const [items, setItems] = useState<LedgerItem[]>(loadItems);
   const [preferences, setPreferences] = useState<Preferences>(() =>
     normalizePreferences(loadJson<Partial<Preferences>>(PREFERENCES_KEY, {})),
   );
