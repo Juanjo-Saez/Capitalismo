@@ -37,3 +37,17 @@
 .meal-recipe.is-archived h3 { color: var(--muted); font-weight: 600; }
 
 .meal-empty { padding: 40px 0; color: var(--muted); font-size: 13px; text-align: center; }
+
+.meal-tags { display: block; color: var(--sage-dark); }
+
+.meal-warnings { margin-bottom: 22px; padding: 14px 18px; border-radius: 11px; background: #fbf1ea; }
+.meal-warnings .eyebrow { margin-bottom: 4px; }
+.meal-warnings ul { margin: 0; padding-left: 18px; color: var(--ink); font-size: 13px; line-height: 1.6; }
+
+.meal-slot.is-conflict { box-shadow: inset 3px 0 0 #b5654a; }
+.meal-slot.is-conflict select { border-color: #b5654a; }
+
+.variety-panel { margin-bottom: 22px; padding: 18px 20px; border-radius: 11px; background: var(--paper); box-shadow: var(--shadow); }
+.variety-panel .check-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13px; }
+.variety-panel .form-tip { margin: 0; }
+.variety-limits { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }

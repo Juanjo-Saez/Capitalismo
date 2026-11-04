@@ -8,14 +8,21 @@ import {
   Recipe,
   RecipeEntry,
   SLOT_LABELS,
+  VarietyConflict,
+  VarietyPrefs,
   addDays,
   createMealId,
+  createPlanContext,
+  findVarietyConflicts,
   generateWeek,
   getEntry,
   getNextWeekStart,
   getWeekDates,
   isRecipeEligible,
   isRecipeUsed,
+  makeRecipeEntry,
+  normalizeTags,
+  parseTagInput,
   pickAlternative,
   slotKey,
 } from './mealPlan';
@@ -26,6 +33,8 @@ type MealPlannerProps = {
   setRecipes: Dispatch<SetStateAction<Recipe[]>>;
   mealWeeks: MealWeek[];
   setMealWeeks: Dispatch<SetStateAction<MealWeek[]>>;
+  varietyPrefs: VarietyPrefs;
+  setVarietyPrefs: Dispatch<SetStateAction<VarietyPrefs>>;
   onNotice: (message: string) => void;
 };
 
@@ -38,6 +47,7 @@ type RecipeForm = {
   allowed: MealSlot[];
   prepMinutes: string;
   note: string;
+  tags: string;
 };
 
 type UndoState = { weekStart: string; entries: Record<string, MealEntry> };
@@ -55,6 +65,9 @@ const formatWeekday = (dateKey: string) =>
 const formatShortDate = (dateKey: string) =>
   new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(new Date(`${dateKey}T12:00:00`));
 
+const formatWeekdayName = (dateKey: string) =>
+  new Intl.DateTimeFormat('es-ES', { weekday: 'long' }).format(new Date(`${dateKey}T12:00:00`));
+
 // Returns undefined when the input is not a positive whole number.
 const parsePrepMinutes = (value: string): number | null | undefined => {
   const trimmed = value.trim();
@@ -63,17 +76,42 @@ const parsePrepMinutes = (value: string): number | null | undefined => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
 
-const describeGeneration = (unfilled: Record<MealSlot, number>) => {
-  if (unfilled.lunch + unfilled.dinner === 0) return 'Menú generado sin huecos pendientes.';
+const describeGeneration = (unfilled: Record<MealSlot, number>, conflictCount: number) => {
   const parts = MEAL_SLOTS.filter((slot) => unfilled[slot] > 0).map(
     (slot) => `${unfilled[slot]} ${slot === 'lunch' ? 'comidas' : 'cenas'}`,
   );
-  return `Menú generado. Faltan recetas distintas para ${parts.join(' y ')}.`;
+  const base =
+    parts.length === 0
+      ? 'Menú generado sin huecos pendientes.'
+      : `Menú generado. Faltan recetas distintas para ${parts.join(' y ')}.`;
+  if (conflictCount === 0) return base;
+  return `${base} Quedan ${conflictCount} ${conflictCount === 1 ? 'aviso' : 'avisos'} de variedad.`;
 };
 
 const selectValue = (entry: MealEntry) => (entry.status === 'recipe' ? entry.recipeId : entry.status);
 
-export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNotice }: MealPlannerProps) {
+const describeConflict = (conflict: VarietyConflict, entries: Record<string, MealEntry>) => {
+  const label = (key: string) => {
+    const [date, slot] = key.split(':') as [string, MealSlot];
+    const entry = entries[key];
+    const name = entry?.status === 'recipe' ? entry.recipeName : 'receta';
+    return `${name} (${formatWeekdayName(date)}, ${SLOT_LABELS[slot].toLowerCase()})`;
+  };
+  if (conflict.kind === 'repeat') {
+    return `«${conflict.tag}»: ${label(conflict.keys[0])} y ${label(conflict.keys[1])}`;
+  }
+  return `Más de ${conflict.limit} con «${conflict.tag}» esta semana: ${conflict.keys.map(label).join(', ')}`;
+};
+
+export function MealPlanner({
+  recipes,
+  setRecipes,
+  mealWeeks,
+  setMealWeeks,
+  varietyPrefs,
+  setVarietyPrefs,
+  onNotice,
+}: MealPlannerProps) {
   const [view, setView] = useState<MealView>('week');
   const [weekStart, setWeekStart] = useState(() => getNextWeekStart(new Date()));
   const [undoState, setUndoState] = useState<UndoState | null>(null);
@@ -87,6 +125,14 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
   const hasPlannedRecipes = Object.values(entries).some((entry) => entry.status === 'recipe');
   const unlockedCount = Object.values(entries).filter((entry) => entry.status === 'recipe' && !entry.locked).length;
   const canUndo = undoState?.weekStart === weekStart;
+  const planContext = createPlanContext(mealWeeks, weekStart, varietyPrefs);
+  const allEntries = { ...planContext.others, ...entries };
+  const conflicts = findVarietyConflicts(entries, planContext);
+  const conflictKeys = new Set(conflicts.flatMap((conflict) => conflict.keys));
+  const knownTags = normalizeTags([
+    ...recipes.filter((recipe) => !recipe.archived).flatMap((recipe) => recipe.tags),
+    ...Object.keys(varietyPrefs.tagLimits),
+  ]).sort((a, b) => a.localeCompare(b, 'es'));
 
   const writeEntries = (nextEntries: Record<string, MealEntry>) => {
     setMealWeeks((current) => [
@@ -112,10 +158,10 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
       return;
     }
     if (unlockedCount > 0 && !window.confirm(`Se sustituirán ${unlockedCount} platos sin bloquear. ¿Continuar?`)) return;
-    const result = generateWeek(entries, weekStart, recipes);
+    const result = generateWeek(entries, recipes, planContext);
     setUndoState({ weekStart, entries });
     writeEntries(result.entries);
-    onNotice(describeGeneration(result.unfilled));
+    onNotice(describeGeneration(result.unfilled, findVarietyConflicts(result.entries, planContext).length));
   };
 
   const undoGeneration = () => {
@@ -137,16 +183,16 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
     if (isRecipeUsed(entries, recipe.id, key)) {
       onNotice(`${recipe.name} ya está en este menú. Se permite, pero revisa la variedad.`);
     }
-    changeEntry(key, { status: 'recipe', recipeId: recipe.id, recipeName: recipe.name, locked: false });
+    changeEntry(key, makeRecipeEntry(recipe));
   };
 
   const chooseAlternative = (key: string, slot: MealSlot) => {
-    const recipe = pickAlternative(entries, key, slot, recipes);
+    const recipe = pickAlternative(entries, key, slot, recipes, planContext);
     if (!recipe) {
       onNotice('No hay otra alternativa disponible para este hueco.');
       return;
     }
-    changeEntry(key, { status: 'recipe', recipeId: recipe.id, recipeName: recipe.name, locked: false });
+    changeEntry(key, makeRecipeEntry(recipe));
   };
 
   const optionsFor = (slot: MealSlot, entry: MealEntry) => {
@@ -165,7 +211,7 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
   };
 
   const openNewRecipe = () =>
-    setRecipeForm({ id: null, name: '', allowed: [...MEAL_SLOTS], prepMinutes: '', note: '' });
+    setRecipeForm({ id: null, name: '', allowed: [...MEAL_SLOTS], prepMinutes: '', note: '', tags: '' });
 
   const openEditRecipe = (recipe: Recipe) =>
     setRecipeForm({
@@ -174,7 +220,23 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
       allowed: [...recipe.allowed],
       prepMinutes: recipe.prepMinutes ? String(recipe.prepMinutes) : '',
       note: recipe.note,
+      tags: recipe.tags.join(', '),
     });
+
+  const updateTagLimit = (tag: string, value: string) => {
+    const trimmed = value.trim();
+    const limit = Number(trimmed);
+    if (trimmed !== '' && (!Number.isInteger(limit) || limit <= 0)) return;
+    setVarietyPrefs((current) => {
+      const tagLimits = { ...current.tagLimits };
+      if (trimmed === '') {
+        delete tagLimits[tag];
+      } else {
+        tagLimits[tag] = limit;
+      }
+      return { ...current, tagLimits };
+    });
+  };
 
   const toggleAllowed = (slot: MealSlot) =>
     setRecipeForm((current) =>
@@ -203,7 +265,13 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
       onNotice('El tiempo debe ser un número entero de minutos.');
       return;
     }
-    const data = { name, allowed: recipeForm.allowed, prepMinutes, note: recipeForm.note.trim() };
+    const data = {
+      name,
+      allowed: recipeForm.allowed,
+      prepMinutes,
+      note: recipeForm.note.trim(),
+      tags: parseTagInput(recipeForm.tags),
+    };
     setRecipes((current) =>
       recipeForm.id
         ? current.map((recipe) => (recipe.id === recipeForm.id ? { ...recipe, ...data } : recipe))
@@ -261,6 +329,17 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
             <span className="form-tip">Bloquea los platos que quieras conservar al regenerar.</span>
           </div>
 
+          {conflicts.length > 0 && (
+            <section className="meal-warnings">
+              <p className="eyebrow">avisos de variedad</p>
+              <ul>
+                {conflicts.map((conflict, index) => (
+                  <li key={`${conflict.kind}-${conflict.tag}-${index}`}>{describeConflict(conflict, allEntries)}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           <div className="meal-days">
             {dates.map((date) => (
               <article className="meal-day" key={date}>
@@ -270,7 +349,7 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
                   const entry = getEntry(entries, key);
                   const canReplace = entry.status === 'empty' || (entry.status === 'recipe' && !entry.locked);
                   return (
-                    <div className="meal-slot" key={key}>
+                    <div className={`meal-slot ${conflictKeys.has(key) ? 'is-conflict' : ''}`} key={key}>
                       <span className="meal-slot-label">{SLOT_LABELS[slot]}</span>
                       <select
                         value={selectValue(entry)}
@@ -320,6 +399,36 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
             <button className="primary-button" onClick={openNewRecipe}><Plus size={17} /> Nueva receta</button>
           </div>
 
+          <section className="variety-panel">
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={varietyPrefs.separateSimilar}
+                onChange={(event) => setVarietyPrefs((current) => ({ ...current, separateSimilar: event.target.checked }))}
+              />
+              <span>Evitar la misma etiqueta el mismo día o en días seguidos</span>
+            </label>
+            {knownTags.length === 0 ? (
+              <p className="form-tip">Añade etiquetas a tus recetas, por ejemplo sopa o pasta, para usar estas reglas.</p>
+            ) : (
+              <div className="variety-limits">
+                {knownTags.map((tag) => (
+                  <label className="field" key={tag}>
+                    <span>
+                      {tag} <span className="field-hint">máx. por semana</span>
+                    </span>
+                    <input
+                      inputMode="numeric"
+                      value={varietyPrefs.tagLimits[tag] ?? ''}
+                      onChange={(event) => updateTagLimit(tag, event.target.value)}
+                      placeholder="Sin límite"
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
+
           {recipeForm && (
             <section className="form-panel">
               <div className="form-heading">
@@ -351,6 +460,20 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
                   <label className="field">
                     <span>Nota <span className="field-hint">opcional</span></span>
                     <input value={recipeForm.note} onChange={(event) => setRecipeForm({ ...recipeForm, note: event.target.value })} placeholder="Ej. con pan para mojar" />
+                  </label>
+                  <label className="field field-wide">
+                    <span>Etiquetas <span className="field-hint">separadas por comas</span></span>
+                    <input
+                      list="meal-tags"
+                      value={recipeForm.tags}
+                      onChange={(event) => setRecipeForm({ ...recipeForm, tags: event.target.value })}
+                      placeholder="Ej. sopa, legumbre"
+                    />
+                    <datalist id="meal-tags">
+                      {knownTags.map((tag) => (
+                        <option key={tag} value={tag} />
+                      ))}
+                    </datalist>
                   </label>
                 </div>
                 <div className="form-footer">
@@ -391,6 +514,7 @@ export function MealPlanner({ recipes, setRecipes, mealWeeks, setMealWeeks, onNo
                       {recipe.archived ? ' · archivada' : ''}
                     </p>
                     {recipe.note && <small>{recipe.note}</small>}
+                    {recipe.tags.length > 0 && <small className="meal-tags">{recipe.tags.join(' · ')}</small>}
                   </div>
                   <div className="movement-actions">
                     <button className="icon-button" onClick={() => openEditRecipe(recipe)} aria-label={`Editar ${recipe.name}`} title="Editar">

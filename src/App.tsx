@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { MealPlanner } from './MealPlanner';
-import { MealWeek, Recipe, parseMealWeeks, parseRecipes } from './mealPlan';
+import { MealWeek, Recipe, VarietyPrefs, parseMealWeeks, parseRecipes, parseVarietyPrefs } from './mealPlan';
 
 type Person = 'Juanjo' | 'Ana';
 type SplitMode = 'equal' | 'full-other';
@@ -80,6 +80,7 @@ type BackupPayload = {
   preferences: Preferences;
   recipes?: Recipe[];
   mealWeeks?: MealWeek[];
+  mealVariety?: VarietyPrefs;
 };
 
 const ITEMS_KEY = 'gastos:items';
@@ -88,6 +89,7 @@ const AUTO_BACKUP_KEY = 'gastos:auto-backup';
 const AUTO_BACKUP_AT_KEY = 'gastos:auto-backup-at';
 const RECIPES_KEY = 'gastos:recipes';
 const MEAL_WEEKS_KEY = 'gastos:meal-weeks';
+const VARIETY_KEY = 'gastos:meal-variety';
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
 const PEOPLE: Person[] = ['Juanjo', 'Ana'];
@@ -217,6 +219,9 @@ function App() {
   const [section, setSection] = useState<'expenses' | 'meals'>('expenses');
   const [recipes, setRecipes] = useState<Recipe[]>(() => parseRecipes(loadJson<unknown>(RECIPES_KEY, [])));
   const [mealWeeks, setMealWeeks] = useState<MealWeek[]>(() => parseMealWeeks(loadJson<unknown>(MEAL_WEEKS_KEY, [])));
+  const [varietyPrefs, setVarietyPrefs] = useState<VarietyPrefs>(() =>
+    parseVarietyPrefs(loadJson<unknown>(VARIETY_KEY, null)),
+  );
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showSettlementForm, setShowSettlementForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -260,11 +265,11 @@ function App() {
     localStorage.setItem(ITEMS_KEY, JSON.stringify(items));
     const lastAutoBackup = Number(localStorage.getItem(AUTO_BACKUP_AT_KEY) || 0);
     if ((items.length > 0 || recipes.length > 0) && Date.now() - lastAutoBackup >= FIVE_DAYS) {
-      const payload = createBackup(items, preferences, recipes, mealWeeks);
+      const payload = createBackup(items, preferences, recipes, mealWeeks, varietyPrefs);
       localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(payload));
       localStorage.setItem(AUTO_BACKUP_AT_KEY, String(Date.now()));
     }
-  }, [items, preferences, recipes, mealWeeks]);
+  }, [items, preferences, recipes, mealWeeks, varietyPrefs]);
 
   useEffect(() => {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
@@ -277,6 +282,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem(MEAL_WEEKS_KEY, JSON.stringify(mealWeeks));
   }, [mealWeeks]);
+
+  useEffect(() => {
+    localStorage.setItem(VARIETY_KEY, JSON.stringify(varietyPrefs));
+  }, [varietyPrefs]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setDefaultTick(Date.now()), 60_000);
@@ -417,6 +426,7 @@ function App() {
     currentPreferences = preferences,
     currentRecipes = recipes,
     currentMealWeeks = mealWeeks,
+    currentVariety = varietyPrefs,
   ): BackupPayload => ({
     version: 3,
     exportedAt: new Date().toISOString(),
@@ -424,6 +434,7 @@ function App() {
     preferences: currentPreferences,
     recipes: currentRecipes,
     mealWeeks: currentMealWeeks,
+    mealVariety: currentVariety,
   });
 
   const exportBackup = () => {
@@ -450,6 +461,7 @@ function App() {
         // Copias anteriores a la sección Menús no traen estos campos: se conservan los datos actuales.
         if (Array.isArray(payload.recipes)) setRecipes(parseRecipes(payload.recipes));
         if (Array.isArray(payload.mealWeeks)) setMealWeeks(parseMealWeeks(payload.mealWeeks));
+        if (payload.mealVariety) setVarietyPrefs(parseVarietyPrefs(payload.mealVariety));
         setNotice('Copia restaurada correctamente.');
       } catch {
         setNotice('No se pudo leer esa copia JSON.');
@@ -529,6 +541,8 @@ function App() {
             setRecipes={setRecipes}
             mealWeeks={mealWeeks}
             setMealWeeks={setMealWeeks}
+            varietyPrefs={varietyPrefs}
+            setVarietyPrefs={setVarietyPrefs}
             onNotice={setNotice}
           />
         ) : (
