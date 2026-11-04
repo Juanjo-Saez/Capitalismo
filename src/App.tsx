@@ -19,6 +19,8 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
+import { MealPlanner } from './MealPlanner';
+import { MealWeek, Recipe, parseMealWeeks, parseRecipes } from './mealPlan';
 
 type Person = 'Juanjo' | 'Ana';
 type SplitMode = 'equal' | 'full-other';
@@ -76,12 +78,16 @@ type BackupPayload = {
   exportedAt: string;
   items: LedgerItem[];
   preferences: Preferences;
+  recipes?: Recipe[];
+  mealWeeks?: MealWeek[];
 };
 
 const ITEMS_KEY = 'gastos:items';
 const PREFERENCES_KEY = 'gastos:preferences';
 const AUTO_BACKUP_KEY = 'gastos:auto-backup';
 const AUTO_BACKUP_AT_KEY = 'gastos:auto-backup-at';
+const RECIPES_KEY = 'gastos:recipes';
+const MEAL_WEEKS_KEY = 'gastos:meal-weeks';
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
 const PEOPLE: Person[] = ['Juanjo', 'Ana'];
@@ -208,6 +214,9 @@ function App() {
     normalizePreferences(loadJson<Partial<Preferences>>(PREFERENCES_KEY, {})),
   );
   const [tab, setTab] = useState<Tab>('summary');
+  const [section, setSection] = useState<'expenses' | 'meals'>('expenses');
+  const [recipes, setRecipes] = useState<Recipe[]>(() => parseRecipes(loadJson<unknown>(RECIPES_KEY, [])));
+  const [mealWeeks, setMealWeeks] = useState<MealWeek[]>(() => parseMealWeeks(loadJson<unknown>(MEAL_WEEKS_KEY, [])));
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showSettlementForm, setShowSettlementForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -250,16 +259,24 @@ function App() {
   useEffect(() => {
     localStorage.setItem(ITEMS_KEY, JSON.stringify(items));
     const lastAutoBackup = Number(localStorage.getItem(AUTO_BACKUP_AT_KEY) || 0);
-    if (items.length > 0 && Date.now() - lastAutoBackup >= FIVE_DAYS) {
-      const payload = createBackup(items, preferences);
+    if ((items.length > 0 || recipes.length > 0) && Date.now() - lastAutoBackup >= FIVE_DAYS) {
+      const payload = createBackup(items, preferences, recipes, mealWeeks);
       localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(payload));
       localStorage.setItem(AUTO_BACKUP_AT_KEY, String(Date.now()));
     }
-  }, [items, preferences]);
+  }, [items, preferences, recipes, mealWeeks]);
 
   useEffect(() => {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
+
+  useEffect(() => {
+    localStorage.setItem(RECIPES_KEY, JSON.stringify(recipes));
+  }, [recipes]);
+
+  useEffect(() => {
+    localStorage.setItem(MEAL_WEEKS_KEY, JSON.stringify(mealWeeks));
+  }, [mealWeeks]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setDefaultTick(Date.now()), 60_000);
@@ -395,11 +412,18 @@ function App() {
     }
   };
 
-  const createBackup = (currentItems = items, currentPreferences = preferences): BackupPayload => ({
-    version: 2,
+  const createBackup = (
+    currentItems = items,
+    currentPreferences = preferences,
+    currentRecipes = recipes,
+    currentMealWeeks = mealWeeks,
+  ): BackupPayload => ({
+    version: 3,
     exportedAt: new Date().toISOString(),
     items: currentItems,
     preferences: currentPreferences,
+    recipes: currentRecipes,
+    mealWeeks: currentMealWeeks,
   });
 
   const exportBackup = () => {
@@ -423,6 +447,9 @@ function App() {
         if (!Array.isArray(payload.items)) throw new Error('Formato inválido');
         setItems(payload.items.map(normalizeLedgerItem));
         if (payload.preferences) setPreferences(normalizePreferences(payload.preferences));
+        // Copias anteriores a la sección Menús no traen estos campos: se conservan los datos actuales.
+        if (Array.isArray(payload.recipes)) setRecipes(parseRecipes(payload.recipes));
+        if (Array.isArray(payload.mealWeeks)) setMealWeeks(parseMealWeeks(payload.mealWeeks));
         setNotice('Copia restaurada correctamente.');
       } catch {
         setNotice('No se pudo leer esa copia JSON.');
@@ -485,12 +512,27 @@ function App() {
           <span>gastos</span>
         </a>
         <div className="header-meta"><span>Juanjo</span><span className="meta-heart">&amp;</span><span>Ana</span></div>
-        <button className="avatar-button" onClick={() => setTab('backup')} aria-label="Abrir ajustes y copias">
+        <button className="avatar-button" onClick={() => { setSection('expenses'); setTab('backup'); }} aria-label="Abrir ajustes y copias">
           J<span>&amp;</span>A
         </button>
       </header>
 
       <main id="top" className="page-content">
+        <div className="segmented-control section-switch" role="group" aria-label="Sección">
+          <button className={section === 'expenses' ? 'selected' : ''} onClick={() => setSection('expenses')}>Gastos</button>
+          <button className={section === 'meals' ? 'selected' : ''} onClick={() => setSection('meals')}>Menús</button>
+        </div>
+
+        {section === 'meals' ? (
+          <MealPlanner
+            recipes={recipes}
+            setRecipes={setRecipes}
+            mealWeeks={mealWeeks}
+            setMealWeeks={setMealWeeks}
+            onNotice={setNotice}
+          />
+        ) : (
+        <>
         <section className="intro-row">
           <div>
             <p className="eyebrow"><Sparkles size={14} /> vuestro rincón compartido</p>
@@ -557,14 +599,12 @@ function App() {
         {tab === 'backup' && (
           <section className="settings-view"><div className="settings-hero"><p className="eyebrow"><Settings2 size={14} /> tranquilidad para tus datos</p><h1>Copias y ajustes</h1><p>Los datos viven en este dispositivo. Guarda una copia JSON para llevarlos contigo o recuperarlos si cambias de móvil.</p></div><div className="backup-grid"><article className="backup-card primary-backup"><div className="backup-icon"><FileJson size={22} /></div><h2>Guardar una copia</h2><p>Descarga todos tus gastos, liquidaciones y preferencias en un archivo JSON.</p><button className="primary-button" onClick={exportBackup}><Download size={17} /> Descargar copia</button></article><article className="backup-card"><div className="backup-icon soft"><Upload size={22} /></div><h2>Restaurar una copia</h2><p>Importa un archivo anterior para recuperar tu historial en este dispositivo.</p><input ref={importRef} type="file" accept="application/json,.json" onChange={importBackup} hidden /><button className="secondary-button" onClick={() => importRef.current?.click()}><Upload size={17} /> Elegir archivo</button></article></div><div className="auto-backup-note"><Check size={18} /><div><strong>Respaldo interno automático</strong><p>La app guarda una instantánea privada cada 5 días mientras está en uso. Para conservar un archivo fuera del navegador, descarga una copia manual.</p></div></div><div className="settings-note"><span className="note-number">01</span><div><strong>Todo permanece en el historial</strong><p>Las liquidaciones ajustan el balance, pero nunca hacen desaparecer los gastos ni los pagos anteriores.</p></div></div><div className="settings-note"><span className="note-number">02</span><div><strong>Importes precisos</strong><p>Los euros se guardan internamente en céntimos para que los cálculos sean consistentes.</p></div></div></section>
         )}
+        </>
+        )}
       </main>
       <footer className="app-footer"><span>Hecho para dos <Heart size={13} fill="currentColor" /></span><span>Los datos se quedan en este dispositivo</span></footer>
     </div>
   );
-}
-
-function createBackup(items: LedgerItem[], preferences: Preferences): BackupPayload {
-  return { version: 2, exportedAt: new Date().toISOString(), items, preferences };
 }
 
 export default App;
